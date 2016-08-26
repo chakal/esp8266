@@ -29,7 +29,8 @@ boolean oldValue = -1;
 const char* mqtt_server = "openhab.home.lan";
 
 const String node_id = "garage";
-const char* sub_topic = "esp8266/garage/manette";
+const char* sub_topic = "esp8266/garage/+";
+const char* log_topic = "esp8266/garage/log";
 char message_buff[100];
 
 // Callback function header
@@ -39,7 +40,7 @@ void wificonnect();
 void reconnect();
 void getVolt();
 void getTemp();
-void getDoor();
+void getDoor(bool forcePublish = false);
 void ota();
 String macToStr(const uint8_t* mac);
 
@@ -246,16 +247,19 @@ void callback(char* topic, byte* payload, unsigned int length) {
   }
   message_buff[i] = '\0';
   Serial.println();
-  String msgString = String(message_buff);
-    
-  if (msgString.equals("open")) {
-      openGarage();
-  }
-
-  if (msgString.equals("update")) {
-      getDoor();
+  
+  if (strcmp(topic,"esp8266/garage/manette") == 0) {
+    if (strcmp(message_buff, "open") == 0) {
+        openGarage();
+    }
   }
   
+  else if (strcmp(topic,"esp8266/garage/update") == 0) {
+    if (strcmp(message_buff, "1") == 0) {
+        getDoor(true);
+    }
+  }
+
 }
 
 void loop()
@@ -281,12 +285,12 @@ void loop()
   }
 }
 
-void getDoor() {
+void getDoor(bool forcePublish) {
   // Check for DOOR change value
   debouncer.update();
   int value = debouncer.read();
   //boolean tripped = digitalRead(DOOR) == HIGH; 
-  if (value != oldValue ) {
+  if ((value != oldValue ) || forcePublish) {
           // MQTT: convert float to str
           String topic = "esp8266/" + node_id + "/garagedoor";
           client.publish(topic.c_str(), String(value,DEC).c_str());
