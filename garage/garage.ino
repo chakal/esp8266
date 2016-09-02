@@ -193,8 +193,6 @@ void getTemp() {
     Serial.print(ESP.getVcc());      //this is the raw reading in mV, should something like 3300 if powered by 3.3volts
     Serial.println(" V\t");
 
-
-
     // MQTT: convert float to str
     static char tstr[10];
     static char hstr[10];
@@ -203,7 +201,6 @@ void getTemp() {
     dtostrf(t, 5, 2, tstr);
     dtostrf(h, 5, 2, hstr);
     dtostrf(hic, 5, 2, htstr);
-
 
     // MQTT: publish temp
 
@@ -214,7 +211,6 @@ void getTemp() {
     client.publish(topic.c_str(), hstr);
     topic = "esp8266/" + node_id + "/heat";
     client.publish(topic.c_str(), htstr);
-
   }
 
 }
