@@ -6,7 +6,6 @@
 
 */
 
-//#define TELNET
 #define OTA
 //#define THINGSPEAK
 //#define DEBUG
@@ -29,10 +28,15 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <HomeWifi.h>
+#include <ArduinoOTA.h>
+#include <Bounce2.h>
 
 // Define variables
 
 const String node_id = "congelateur";
+const int buttonPin = D3;     // the number of the pushbutton pin
+int buttonState = 0;         // variable for reading the pushbutton status
+Bounce debouncer = Bounce(); 
 
 unsigned long previousMillis = 0;        // will store last time LED was updated
 const unsigned long oneMinute = 2 * 60 * 1000;
@@ -45,15 +49,11 @@ void postThingspeak(float t, float h);
 WiFiClient thingspeak_client;
 #endif
 
-#ifdef OTA
-#include <ArduinoOTA.h>
-#endif
 
 // Import and define DHT sensor
 #include <DHT.h>
 #define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
-#define PIN0 0
-#define PINDHT 2
+#define PINDHT D7
 DHT dht(PINDHT, DHTTYPE);
 
 // Define functions
@@ -63,7 +63,7 @@ void getRSSI();
 void getVolt();
 void pollSensors();
 void getHeap();
-void waitForWifi();
+void ota();
 
 #ifdef MQTT
 #include <PubSubClient.h>
@@ -76,99 +76,54 @@ WiFiClient mqtt_client;
 PubSubClient client(mqtt_server, 1883, callback, mqtt_client);
 #endif
 
-#ifdef TELNET
-// Define telnet console
-WiFiServer telnetServer(23);
-WiFiClient serverClient;
-#endif
-
 void setup() {
   // Init console output
   Serial.begin(115200);
   Serial.println("Booting");
 
-#ifdef TELNET
-  // Init telnet server
-  Serial.println("Starting telnet server");
-  telnetServer.begin();
-  telnetServer.setNoDelay(true);
-#endif
-
   // Init wifi connection
   Serial.println("Initializing Wifi...");
   wificonnect();
 
-#ifdef OTA
-  // Init OTA module
-  Serial.print("Initializing OTA module...");
-  ArduinoOTA.setHostname((char*) node_id.c_str());
-  ArduinoOTA.onStart([]() {
-    Serial.println("Start");
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
-  });
-  ArduinoOTA.begin();
-  Serial.println("OTA Ready");
-#endif OTA
+  ota();
 
   //Initialise DHT probe
   Serial.println("Initializing DHT22...");
   dht.begin();
 
+  pinMode(buttonPin, INPUT);
+  debouncer.attach(buttonPin);
+  debouncer.interval(500);
+
   Serial.println("Setup completed.");
 }
 
 void loop() {
-#ifdef OTA
   ArduinoOTA.handle();  //Listen to OTA events
-#endif
+  debouncer.update();
 
-#ifdef TELNET //Listen for telnet client
-  if (telnetServer.hasClient()) {
-    if (!serverClient || !serverClient.connected()) {
-      if (serverClient) {
-        serverClient.stop();
-        Serial.println("Telnet Client Stop");
-      }
-      serverClient = telnetServer.available();
-      Serial.println("New Telnet client");
-      serverClient.flush();  // clear input buffer, else you get strange characters
-    }
-  }
-#endif
+  mqttConnect();
 
-  unsigned long currentMillis = millis();
-
-  if (currentMillis - previousMillis >= oneMinute) {
-    waitForWifi();
-#ifdef MQTT
-    mqttConnect();
-#endif
-
+  const unsigned long oneMinute = 60 * 1000UL;
+  static unsigned long lastSampleTime = 0 - oneMinute;  // initialize such that a reading is due the first time through loop()
+  unsigned long now = millis();
+  
+  if (now - lastSampleTime >= oneMinute) {
     // save the last time you polled sensors
-    previousMillis = currentMillis;
+    lastSampleTime += oneMinute;
     pollSensors();
   }
-
+  //button state changed
+  if ( debouncer.fell() ) {
+      pollSensors();     
+   }
 }
 
 void pollSensors() {
   Serial.print("Sampling sensors...");
   getTemp(); // Send temp and humidity
   getRSSI(); // Send WIFI RSSI
-  getVolt(); // Send Voltage
+  //getVolt(); // Send Voltage
   getHeap(); // Send Free Ram
 }
 
@@ -185,32 +140,26 @@ void getHeap() {
 
 }
 
-void waitForWifi() {
-  Serial.print("Connecting to WiFi.");
-  // Wait for connection
+void wificonnect() {
+  Serial.println();
+  Serial.println();
+  WiFi.mode(WIFI_STA);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  WiFi.setAutoConnect(true);
+  WiFi.setAutoReconnect(true);
+
   while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
     Serial.print(".");
-    delay(100);
   }
-  Serial.println(" Done");
-  Serial.printf("Connected to %s\n", WIFI_SSID);
-  Serial.print("IP address: ");
+
+  Serial.println("");
+  Serial.print("WiFi connected: ");
   Serial.println(WiFi.localIP());
 }
 
-
-void wificonnect() {
-  Serial.println("Using saved SSID: " + WiFi.SSID());
-  if (WiFi.SSID() != WIFI_SSID) {
-    Serial.println("Configuring persistent wifi...");
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    WiFi.persistent(true);
-    WiFi.setAutoConnect(true);
-    WiFi.setAutoReconnect(true);
-  } else {
-    Serial.println("Using saved wifi info...");
-  }
-}
 
 #ifdef MQTT
 void mqttConnect() {
@@ -225,7 +174,7 @@ void mqttConnect() {
       Serial.print("failed, rc=");
       Serial.print(client.state());
       Serial.println(" try again in 5 seconds");
-      delay(1000);
+      delay(5000);
     }
   }
   //}
@@ -262,17 +211,14 @@ void getTemp() {
     Serial.print(ESP.getVcc());      //this is the raw reading in mV, should something like 3300 if powered by 3.3volts
     Serial.println(" V\t");
 
-
-#ifdef MQTT
     // MQTT: convert float to str
     static char tstr[10];
     static char hstr[10];
     static char htstr[10];
 
     dtostrf(t, 5, 2, tstr);
-    dtostrf(h, 5, 1, hstr);
+    dtostrf(h, 5, 2, hstr);
     dtostrf(hic, 5, 2, htstr);
-
 
     // MQTT: publish temp
 
@@ -283,7 +229,6 @@ void getTemp() {
     client.publish(topic.c_str(), hstr);
     topic = "esp8266/" + node_id + "/heat";
     client.publish(topic.c_str(), htstr);
-#endif
 
 #ifdef THINGSPEAK
     // THINGSPEAK public
@@ -342,5 +287,30 @@ void postThingspeak(float t, float h) {
   }
 }
 #endif
+
+void ota() {
+    // Init OTA module
+  Serial.print("Initializing OTA module...");
+  ArduinoOTA.setHostname((char*) node_id.c_str());
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+}
 
 
