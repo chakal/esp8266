@@ -5,169 +5,75 @@
 #include <Bounce2.h>
 #include <ArduinoOTA.h>
 #include <HomeWifi.h>
+#include <LED.h>
 
 #define DOOR D6 // D5 MAGNETIC SENSOR - Porte de garage
 #define RELAY D1   // D6 RELAY - Porte de garage
 #define DHTPIN D7 // D7 DHT22 - Garage
-#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
 
 #define DOORBOUNCE 150 //Door bounce timer to correct for jumpy reed sensor in ms
 #define DOORRELAYDELAY 500 //Door relay trigger duration in ms
 
-unsigned long SLEEP_TIME = 30000; // Sleep time between reads (in milliseconds)
-DHT dht(DHTPIN, DHTTYPE);
-float lastTemp;
-float lastHum;
-boolean metric = true; 
+#define DHTTYPE DHT22   // DHT 22  (AM2302), AM2321
+
+// Callback function header
+void callback(char* topic, byte* payload, unsigned int length);
+void openGarage();
+void wificonnect();
+void mqttConnect();
+void getVolt();
+void getTemp();
+void getDoor(bool forcePublish = false);
+void ota();
+void getHeap();
+void pollSensors();
+void getRSSI();
 
 //Relay Output bits
 #define RELAY_ON 1  // GPIO value to write to turn on attached relay
 #define RELAY_OFF 0 // GPIO value to write to turn off attached relay
 
 boolean oldValue = -1;
-
-const char* mqtt_server = "openhab.home.lan";
-
 const String node_id = "garage";
+const char* mqtt_server = "openhab.home.lan";
 const char* sub_topic = "esp8266/garage/+";
 const char* log_topic = "esp8266/garage/log";
 char message_buff[100];
-
-// Callback function header
-void callback(char* topic, byte* payload, unsigned int length);
-void openGarage();
-void wificonnect();
-void reconnect();
-void getVolt();
-void getTemp();
-void getDoor(bool forcePublish = false);
-void ota();
-String macToStr(const uint8_t* mac);
-
+  
 WiFiClient espClient;
-PubSubClient client(espClient);
-
-
+PubSubClient client(mqtt_server, 1883, callback, espClient);
+DHT dht(DHTPIN, DHTTYPE);
+LED led(BUILTIN_LED);
 Bounce debouncer = Bounce(); 
 
-void ota() {
-  Serial.print("Initializing OTA module...");
-  ArduinoOTA.setHostname((char*) node_id.c_str());
-  ArduinoOTA.onStart([]() {
-    Serial.println("Start");
-  });
-  ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-  });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
-  });
-  ArduinoOTA.begin();
-  Serial.println("OTA Ready");
-}
+void setup() {
+  // Initialise console output
+  Serial.begin(115200);
+  Serial.println("Booting");
+  
+  // Initialise wifi connection
+  wificonnect();
 
-void wificonnect() {
-  Serial.println();
-  Serial.println();
-  WiFi.mode(WIFI_STA);
-  Serial.print("Connecting to ");
-  Serial.println(ssid);
-  WiFi.begin(ssid, password);
+  // Initialise OTA
+  ota();
 
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    Serial.print(".");
-  }
+  // Initialise DHT probe
+  Serial.println("Initializing DHT22...");
+  dht.begin();
 
-  Serial.println("");
-  Serial.print("WiFi connected: ");
-  Serial.println(WiFi.localIP());
-}
-String macToStr(const uint8_t* mac)
-{
-  String result;
-  for (int i = 0; i < 6; ++i) {
-    result += String(mac[i], 16);
-    if (i < 5)
-      result += ':';
-  }
-  return result;
-}
-
-void reconnect() {
-  // Loop until we're reconnected
-  while (!client.connected()) {
-    Serial.print("Attempting MQTT connection...");
-
-    String clientName;
-    clientName += node_id;
-    uint8_t mac[6];
-    WiFi.macAddress(mac);
-    clientName += "-";
-    clientName += macToStr(mac);
-    clientName += "-";
-    clientName += String(micros() & 0xff, 16);
-
-
-    // Attempt to connect
-    if (client.connect((char*) clientName.c_str())) {
-      Serial.print("connected as ");
-      Serial.println(clientName);
-      // Once connected, publish an announcement...
-      //client.publish("outTopic", "hello world");
-      // ... and resubscribe
-      client.subscribe(sub_topic);
-    } else {
-      Serial.print("failed, rc=");
-      Serial.print(client.state());
-      Serial.println(" try again in 5 seconds");
-      // Wait 5 seconds before retrying
-      delay(5000);
-    }
-  }
-}
-
-void setup()
-{
-  Serial.begin(115200); // 19200 is the rate of communication
-  // Setup MQTT
-  client.setServer(mqtt_server, 1883);
-  client.setCallback(callback);
-	// Startup Temp Sensors
-	dht.begin();
-	// Then set relay pins in output mode
+  // Then set relay pins in output mode
 	pinMode(RELAY, OUTPUT);
-  pinMode(BUILTIN_LED, OUTPUT);
-  //Ensure relay is off
-  digitalWrite(RELAY,RELAY_OFF); //turn relay off
-  digitalWrite(BUILTIN_LED,!RELAY_OFF);
+  digitalWrite(RELAY,RELAY_OFF); // Ensure relay is off
+  //pinMode(BUILTIN_LED, OUTPUT);
+  //digitalWrite(BUILTIN_LED,!RELAY_OFF);
+	
 	// Init Door pin
   pinMode(DOOR,INPUT_PULLUP);
-  //digitalWrite(DOOR,HIGH);
-	
-	//Activate debounce on door
-  debouncer.attach(DOOR);
+  debouncer.attach(DOOR); // Activate debounce on door
   debouncer.interval(DOORBOUNCE);
-
-  ota();
-  wificonnect();
 }
 
-
-
-
 void getTemp() {
-
-  //client.loop();
-
   // Read temperature as Celsius
   float h = dht.readHumidity();
   float t = dht.readTemperature();
@@ -224,12 +130,11 @@ void getVolt() {
 
 void openGarage() {
   Serial.println("Opening Garage");
-  //trigger relay for 500ms 
+  led.on();
   digitalWrite(RELAY, RELAY_ON);
-  digitalWrite(BUILTIN_LED, !RELAY_ON);
   delay(DOORRELAYDELAY);
   digitalWrite(RELAY, RELAY_OFF);
-  digitalWrite(BUILTIN_LED, !RELAY_OFF);
+  led.off();
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
@@ -255,29 +160,23 @@ void callback(char* topic, byte* payload, unsigned int length) {
         getDoor(true);
     }
   }
-
+  //free(message_buff);
 }
 
-void loop()
-{
-  ArduinoOTA.handle();
+void loop() {
+  ArduinoOTA.handle();  // Listen to OTA events
   //connect mqtt
-  if (!client.connected()) {
-    reconnect();
-  }
-  client.loop();
-
+  mqttConnect(); // Connect/keepalive to mqtt server
+  
   getDoor();
     
   // Fetch temperatures from Dallas sensors
   const unsigned long oneMinute = 60 * 1000UL;
   static unsigned long lastSampleTime = 0 - oneMinute;  // initialize such that a reading is due the first time through loop()
-      
   unsigned long now = millis();
   if (now - lastSampleTime >= oneMinute) {
      lastSampleTime += oneMinute;
-     getTemp();
-     getVolt();
+     pollSensors();
   }
 }
 
@@ -287,10 +186,105 @@ void getDoor(bool forcePublish) {
   int value = debouncer.read();
   //boolean tripped = digitalRead(DOOR) == HIGH; 
   if ((value != oldValue ) || forcePublish) {
-          // MQTT: convert float to str
-          String topic = "esp8266/" + node_id + "/garagedoor";
-          client.publish(topic.c_str(), String(value,DEC).c_str());
-          oldValue = value;
+    // MQTT: convert float to str
+    String topic = "esp8266/" + node_id + "/garagedoor";
+    client.publish(topic.c_str(), String(value,DEC).c_str());
+    oldValue = value;
   }
 }
 
+void ota() {
+  Serial.print("Initializing OTA module...");
+  ArduinoOTA.setHostname((char*) node_id.c_str());
+  ArduinoOTA.setPassword(ota_password);
+  ArduinoOTA.onStart([]() {
+    Serial.println("Start");
+  });
+  ArduinoOTA.onEnd([]() {
+    Serial.println("\nEnd");
+  });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+    else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+  });
+  ArduinoOTA.begin();
+  Serial.println("OTA Ready");
+}
+
+void wificonnect() {
+  Serial.println("Initializing Wifi...");
+  WiFi.mode(WIFI_STA);
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, password);
+  WiFi.setAutoConnect(true);
+  WiFi.setAutoReconnect(true);
+
+  while (WiFi.status() != WL_CONNECTED) {
+    led.blink(500,2);
+    //delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.print("WiFi connected: ");
+  Serial.println(WiFi.localIP());
+}
+
+void mqttConnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    // Attempt to connect
+    if (client.connect(node_id.c_str())) {
+      Serial.println("Connected.");
+      client.subscribe(sub_topic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      led.blink(5000,5);
+      //delay(5000);
+    }
+  }
+  client.loop(); // listen to subscriptions
+}
+
+void getHeap() {
+  unsigned long freeheap = ESP.getFreeHeap();
+  static char fhstr[10];
+
+  Serial.printf("Free Heap RAM: %u", freeheap);
+  ltoa(freeheap, fhstr, 10);
+  //dtostrf(freeheap, 8, 0, fhstr);
+  String topic;
+  topic = "esp8266/" + node_id + "/freeheap";
+  client.publish(topic.c_str(), fhstr);
+}
+
+void pollSensors() {
+  Serial.print("Sampling sensors...");
+  getTemp(); // Send temp and humidity
+  getRSSI(); // Send WIFI RSSI
+  //getVolt(); // Send Voltage
+  getHeap(); // Send Free Ram
+}
+
+void getRSSI() {
+  long rssi = WiFi.RSSI();
+  Serial.print("RSSI: ");
+  Serial.println(rssi);
+  String topic;
+  topic = "esp8266/" + node_id + "/rssi";
+  static char rssistr[10];
+  //dtostrf(rssi, 5, 2, rssistr);
+  ltoa(rssi, rssistr, 10);
+  client.publish(topic.c_str(), rssistr);
+}
